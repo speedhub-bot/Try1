@@ -14,8 +14,8 @@ import uuid
 import re
 import sys
 from datetime import datetime
-import tkinter as tk
-from tkinter import filedialog
+# import tkinter as tk
+# from tkinter import filedialog
 from collections import defaultdict, deque
 
 init(autoreset=True)
@@ -414,7 +414,7 @@ def create_session(impersonate="chrome", session_id=None):
     session.timeout = REQUEST_TIMEOUT
     return session
 
-def update_titlebar_phase1():
+def update_titlebar_phase1(callback=None):
     global checked_accounts, codes_found, total_accounts
     with stats_lock:
         checked = checked_accounts
@@ -427,8 +427,10 @@ def update_titlebar_phase1():
         ctypes.windll.kernel32.SetConsoleTitleW(title)
     except:
         pass
+    if callback:
+        callback(title)
 
-def update_titlebar_phase2(processed_count, total_codes):
+def update_titlebar_phase2(processed_count, total_codes, callback=None):
     valid_count = results_count.get('VALID', 0)
     validpi_count = results_count.get('VALID_REQUIRES_CARD', 0)
     region_locked_count = results_count.get('REGION_LOCKED', 0)
@@ -436,7 +438,12 @@ def update_titlebar_phase2(processed_count, total_codes):
     
     proxy_stats = proxy_manager.get_stats()
     title = f"Phase 2: Codes: {processed_count}/{total_codes} | V:{valid_count} | VP:{validpi_count} | RL:{region_locked_count} | I:{invalid_count} | {proxy_stats}"
-    ctypes.windll.kernel32.SetConsoleTitleW(title)
+    try:
+        ctypes.windll.kernel32.SetConsoleTitleW(title)
+    except:
+        pass
+    if callback:
+        callback(title)
 
 def print_colored(message, color):
     with print_lock:
@@ -444,13 +451,7 @@ def print_colored(message, color):
 
 def select_accounts_file():
     """Open file dialog to select accounts file"""
-    root = tk.Tk()
-    root.withdraw()
-    file_path = filedialog.askopenfilename(
-        title="Select accounts.txt file",
-        filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-    )
-    return file_path
+    return None
 
 def read_accounts():
     """Read accounts from selected file"""
@@ -804,7 +805,7 @@ def check_account_for_codes(email, password):
     
     return False
 
-def phase1_fetch_codes(accounts):
+def phase1_fetch_codes(accounts, callback=None):
     """Phase 1: Fetch codes from all accounts"""
     global checked_accounts, total_accounts, fetched_codes, codes_found, promo_codes
     
@@ -835,7 +836,7 @@ def phase1_fetch_codes(accounts):
     print(f"{Fore.MAGENTA}• Promo format: {PROMO_PREFIX}{PROMO_CODE_LENGTH}{Fore.RESET}")
     print()
     
-    update_titlebar_phase1()
+    update_titlebar_phase1(callback)
     
     with ThreadPoolExecutor(max_workers=MAX_THREADS_FETCHER) as executor:
         futures = []
@@ -851,7 +852,7 @@ def phase1_fetch_codes(accounts):
             finally:
                 with stats_lock:
                     checked_accounts += 1
-                update_titlebar_phase1()
+                update_titlebar_phase1(callback)
     
     # Print summary
     print(f"\n{Fore.GREEN}✓ Phase 1 completed!{Fore.RESET}")
@@ -1408,7 +1409,7 @@ def process_codes_for_account_validation(account, codes_queue, results_folder, t
                 elif not success:
                     codes_queue.put(code)
                     
-                update_titlebar_phase2(len(processed_codes), total_codes)
+                update_titlebar_phase2(len(processed_codes), total_codes, callback)
             except Exception:
                 codes_queue.put(code)
             finally:
@@ -1436,7 +1437,7 @@ def read_codes_from_file(filename="fetched_codes.txt"):
         print(f"{Fore.RED}✗ Error reading codes file: {str(e)}{Fore.RESET}")
         return []
 
-def phase2_validate_codes(accounts, codes=None):
+def phase2_validate_codes(accounts, codes=None, callback=None):
     """Phase 2: Validate fetched codes"""
     if codes is None:
         codes = read_codes_from_file("fetched_codes.txt")

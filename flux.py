@@ -16,7 +16,7 @@ import re
 from bs4 import BeautifulSoup
 import json
 import warnings
-from tkinter import Tk, filedialog
+# from tkinter import Tk, filedialog
 from urllib3.exceptions import InsecureRequestWarning
 from rich.console import Console
 from rich.table import Table
@@ -414,11 +414,12 @@ class ComboParser:
 class MultiPlatformScraper:
     """Multi-platform scraper with category selection"""
     
-    def __init__(self, accounts, settings, category, proxy_manager=None):
+    def __init__(self, accounts, settings, category, proxy_manager=None, log_callback=None):
         self.accounts = accounts
         self.settings = settings
         self.category = category
         self.proxy_manager = proxy_manager
+        self.log_callback = log_callback
         self.results = []
         self.valid_accounts = []
         self.invalid_accounts = []
@@ -1263,6 +1264,9 @@ class MultiPlatformScraper:
                             apm = completed_count / elapsed_minutes if elapsed_minutes > 0 else 0
                             progress.update(task, cpm=apm)
                             last_progress_update = current_time
+                            if self.log_callback:
+                                stats_text = f"Progress: {completed_count}/{len(self.accounts)} ({completed_count/len(self.accounts)*100:.1f}%) | Found: {len(self.results)}"
+                                self.log_callback(stats_text)
         
         console.print(f"\n[✓] Completed: {len(self.accounts)} accounts checked", style="green")
         console.print(f"[+] Codes found: {len(self.results)}", style="cyan")
