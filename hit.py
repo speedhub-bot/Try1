@@ -1404,8 +1404,9 @@ class EnhancedResultManager:
 
 
 class LiveStats:
-    def __init__(self, total):
+    def __init__(self, total, callback=None):
         self.total = total
+        self.callback = callback
         self.checked = 0
         self.hits = 0
         self.two_fa = 0
@@ -1510,6 +1511,10 @@ class LiveStats:
             self.last_length = len(line) - line.count('\033')
             sys.stdout.write(line)
             sys.stdout.flush()
+
+            if self.callback:
+                clean_line = re.sub(r'\033\[[0-9;]*m', '', line)
+                self.callback(clean_line)
 
 
 def clear():

