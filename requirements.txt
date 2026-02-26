@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue]>=20.0
+requests
+beautifulsoup4
+rich
+colorama
+pycountry
+curl_cffi
+user_agent
+urllib3
