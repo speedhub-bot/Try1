@@ -7,6 +7,7 @@ import shutil
 import glob
 import random
 import html
+from queue import PriorityQueue
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
@@ -21,7 +22,6 @@ import database
 
 # Authorized Admin ID
 ADMIN_ID = 5944410248
-# ALWAYS USE ENVIRONMENT VARIABLE FOR TOKEN
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Enable logging
@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Task Queue System
+task_queue = PriorityQueue()
 
 # --- UI Helpers ---
 
@@ -101,18 +104,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         f"{get_header('HELP & COMMANDS')}"
-        f"/start - Dashboard\n"
-        f"/me - Profile & Settings\n"
-        f"/threads &lt;num&gt; - Set threads (max 50)\n"
+        f"<b>User Commands:</b>\n"
+        f"/start - Dashboard & Tool Selection\n"
+        f"/me - Check Credits & Profile\n"
+        f"/threads &lt;num&gt; - Set checking threads (max 50)\n"
         f"/help - Show this message\n\n"
-        f"<b>Thread Limits:</b>\n"
+        f"<b>Limits:</b>\n"
         f"• Max <b>5 threads</b> without proxy file.\n"
         f"• Max <b>50 threads</b> with proxy file.\n\n"
-        f"<b>Instructions:</b>\n"
-        f"1. Select a tool.\n"
-        f"2. Upload proxy .txt file and select 'Proxy File' to unlock higher threads.\n"
-        f"3. Upload combo .txt file and select 'Combo File'.\n"
-        f"4. Wait for results file."
+        f"<b>Queue Priority:</b>\n"
+        f"1. Owner (Highest)\n"
+        f"2. Premium Users\n"
+        f"3. Free Users\n\n"
+        f"<b>How to use:</b>\n"
+        f"1. Select a tool from dashboard.\n"
+        f"2. Upload combo .txt file and select 'Combo File'.\n"
+        f"3. (Optional) Upload proxy .txt file and select 'Proxy File'.\n"
+        f"4. Processing starts automatically."
     )
     if database.is_admin(update.effective_user.id):
         help_text += "\n\n<b>Admin Commands:</b>\n/approve /revoke /ban /unban /setplan /add_credits /users"
@@ -141,7 +149,7 @@ async def threads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         n = int(context.args[0])
         if n < 1: raise ValueError
         if not database.get_user_settings(uid)['proxy_file'] and n > 5 and not database.is_admin(uid):
-            await update.message.reply_text("❌ <b>Error:</b> Max 5 threads without proxy file. Upload a proxy file first.", parse_mode=ParseMode.HTML)
+            await update.message.reply_text("❌ <b>Error:</b> Max 5 threads without proxy. Upload proxy file first.", parse_mode=ParseMode.HTML)
             return
         if n > 50 and not database.is_admin(uid): n = 50
         database.update_user_settings(uid, threads=n)
@@ -224,10 +232,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tool = context.user_data.get('selected_tool')
             if not tool: await q.edit_message_text("❌ <b>Select tool first.</b>", parse_mode=ParseMode.HTML); return
             if database.get_credits(uid) <= 0: await q.edit_message_text("❌ <b>No credits.</b>", parse_mode=ParseMode.HTML); return
-            database.deduct_credit(uid)
-            s = database.get_user_settings(uid)
-            st_msg = await q.edit_message_text(f"🚀 <b>Starting {html.escape(tool.upper())}...</b>\nThreads: <code>{s['threads']}</code>\nProxy: <code>{'Using file ✅' if s['proxy_file'] else 'None ❌'}</code>\n⏳ <i>Starting engines...</i>", parse_mode=ParseMode.HTML)
-            threading.Thread(target=run_tool_async, args=(tool, fpath, q.message.chat_id, st_msg.message_id, context.application.loop, s, context.application.bot), daemon=True).start()
+
+            plan = database.get_plan(uid).lower()
+            priority = 2 # Free
+            if database.is_admin(uid): priority = 0
+            elif "premium" in plan: priority = 1
+
+            queue_pos = task_queue.qsize() + 1
+            st_msg = await q.edit_message_text(f"⏳ <b>Queued Task...</b>\n\nTool: <b>{html.escape(tool.upper())}</b>\nPosition: <code>#{queue_pos}</code>\n\nProcessing will start automatically when ready.{get_footer()}", parse_mode=ParseMode.HTML)
+
+            task_queue.put((priority, time.time(), {
+                "tool": tool,
+                "fpath": fpath,
+                "cid": q.message.chat_id,
+                "mid": st_msg.message_id,
+                "uid": uid,
+                "settings": database.get_user_settings(uid)
+            }))
 
 async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user: return
@@ -244,9 +265,46 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("📄 Combo File", callback_data='file_combo'), InlineKeyboardButton("🌐 Proxy File", callback_data='file_proxy')]]
     await update.message.reply_text(f"📂 <b>File Received:</b> <code>{html.escape(doc.file_name)}</code>\n\nWhat is this for?", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
 
+# --- Queue Worker ---
+
+def queue_worker(application):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    while True:
+        try:
+            priority, t_stamp, task = task_queue.get()
+            uid = task["uid"]
+            tool = task["tool"]
+            cid = task["cid"]
+            mid = task["mid"]
+            fpath = task["fpath"]
+            settings = task["settings"]
+
+            # Start message
+            asyncio.run_coroutine_threadsafe(
+                application.bot.edit_message_text(
+                    chat_id=cid, message_id=mid,
+                    text=f"🚀 <b>Starting Task: {html.escape(tool.upper())}</b>\n━━━━━━━━━━━━━\nStatus: <code>Initializing engines...</code>{get_footer()}",
+                    parse_mode=ParseMode.HTML
+                ),
+                application.loop
+            )
+
+            # Deduct credit
+            database.deduct_credit(uid)
+
+            # Run tool
+            run_tool_sync(tool, fpath, cid, mid, application.loop, settings, application.bot)
+
+            task_queue.task_done()
+        except Exception as e:
+            logger.error(f"Worker Error: {e}")
+            time.sleep(2)
+
 # --- Engine ---
 
-def run_tool_async(tool, fpath, cid, mid, loop, settings, bot):
+def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
     last_up = [0]
     ival = 5
     th = settings['threads']
@@ -267,16 +325,12 @@ def run_tool_async(tool, fpath, cid, mid, loop, settings, bot):
         last_up[0] = time.time()
         asyncio.run_coroutine_threadsafe(
             bot.edit_message_text(
-                chat_id=cid,
-                message_id=mid,
+                chat_id=cid, message_id=mid,
                 text=f"⚙️ <b>PROGRESS: {html.escape(tool.upper())}</b>\n━━━━━━━━━━━━━\n{html.escape(text)}{get_footer()}",
                 parse_mode=ParseMode.HTML
             ),
             loop
         )
-
-    # Initial life sign
-    callback("🚀 Loading accounts into execution engine...")
 
     try:
         res_path = None
@@ -325,27 +379,29 @@ def run_tool_async(tool, fpath, cid, mid, loop, settings, bot):
             fs = glob.glob("validation_results_*")
             if fs: res_path = max(fs, key=os.path.getmtime)
 
-        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=cid, text=f"✅ <b>Tool {html.escape(tool.upper())} finished!</b>", parse_mode=ParseMode.HTML), loop)
+        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=cid, text=f"✅ <b>Task {html.escape(tool.upper())} finished!</b>"), loop)
         if res_path and os.path.exists(res_path):
             final = res_path
             if os.path.isdir(res_path):
-                zip_name = f"{res_path}_{int(time.time())}"
-                shutil.make_archive(zip_name, 'zip', res_path); final = f"{zip_name}.zip"
+                shutil.make_archive(res_path, 'zip', res_path); final = f"{res_path}.zip"
             asyncio.run_coroutine_threadsafe(bot.send_document(chat_id=cid, document=open(final, 'rb'), caption=f"📦 <b>Results: {html.escape(tool.upper())}</b>{get_footer()}", parse_mode=ParseMode.HTML), loop)
-        else: callback("✅ Execution complete. No results found.")
+        else: callback("✅ Process finished. No results generated.")
     except Exception as e:
         logger.error(f"Error {tool}: {e}")
         asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=cid, text=f"❌ <b>Execution Error:</b> <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML), loop)
 
+async def post_init(application):
+    threading.Thread(target=queue_worker, args=(application,), daemon=True).start()
+    logger.info("Worker thread started.")
+
 if __name__ == '__main__':
     if not database.is_approved(ADMIN_ID): database.set_approved(ADMIN_ID, True)
     if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        print("CRITICAL ERROR: No BOT_TOKEN. Set TELEGRAM_BOT_TOKEN environment variable.")
+        print("CRITICAL ERROR: No BOT_TOKEN.")
         exit(1)
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Register Commands
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('me', me_command))
@@ -357,9 +413,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('setplan', setplan_handler))
     app.add_handler(CommandHandler('add_credits', add_credits))
     app.add_handler(CommandHandler('users', users))
-
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
 
-    logger.info("Bot started successfully.")
+    logger.info("Bot is starting polling...")
     app.run_polling()
