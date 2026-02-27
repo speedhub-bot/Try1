@@ -1,17 +1,36 @@
-import requests
+#!/usr/bin/env python3
+import logging
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-class HotmailChecker:
-    def __init__(self, email):
-        self.email = email
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    def is_valid(self):
-        # Implement validation check for Hotmail email
-        return "hotmail.com" in self.email
+BOT_TOKEN = "8544623193:AAGB5p8qqnkPbsmolPkKVpAGW7XmWdmFOak"
 
-# Example usage:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Hotmail Checker Bot Started!\n/check - Check accounts\n/help - Show help")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📖 Available Commands:\n/start - Start the bot\n/check - Check Hotmail accounts\n/help - Show this message")
+
+async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📊 Checker is running... Send combo file path")
+
+
+def main():
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("check", check_command))
+        logger.info("✅ Bot started successfully!")
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"❌ Error starting bot: {e}")
+        raise
+
+
 if __name__ == '__main__':
-    checker = HotmailChecker('example@hotmail.com')
-    if checker.is_valid():
-        print(f'{checker.email} is a valid Hotmail email.')
-    else:
-        print(f'{checker.email} is not a valid Hotmail email.')
+    main()
