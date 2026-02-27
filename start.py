@@ -40,7 +40,8 @@ if __name__ == "__main__":
 
     print("✨ Starting bot...")
     try:
-        # Run bot.py as a script to avoid issues with __main__
+        # Run bot.py as a module to ensure imports work correctly
+        # We use python3 bot.py directly as it is standard
         os.system(f"{sys.executable} bot.py")
     except KeyboardInterrupt:
         print("\n👋 Bot stopped.")

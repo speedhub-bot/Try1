@@ -7,18 +7,24 @@ import shutil
 import glob
 import random
 import html
+import sys
 from queue import PriorityQueue
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
 
 # Import tools
-import flux
-import h
-import hit
-import p7
-import pullerv2
-import database
+try:
+    import flux
+    import h
+    import hit
+    import p7
+    import pullerv2
+    import database
+except ImportError as e:
+    print(f"Import Error: {e}")
+    print("Please run python start.py to install all dependencies.")
+    sys.exit(1)
 
 # Authorized Admin ID
 ADMIN_ID = 5944410248
@@ -28,7 +34,11 @@ BOT_TOKEN = "8544623193:AAGB5p8qqnkPbsmolPkKVpAGW7XmWdmFOak"
 # Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -118,10 +128,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2. ⭐ Premium Users (Priority)\n"
         f"3. 👤 Free Users\n\n"
         f"<b>Instructions:</b>\n"
-        f"1. Select a tool.\n"
-        f"2. Upload proxy file and select 'Proxy File' (optional).\n"
-        f"3. Upload combo file and select 'Combo File'.\n"
-        f"4. The task will be queued and executed."
+        f"1. Select a tool from dashboard.\n"
+        f"2. Upload combo file and select 'Combo File'.\n"
+        f"3. (Optional) Upload proxy file first to unlock more threads."
     )
     if database.is_admin(update.effective_user.id):
         help_text += "\n\n<b>Admin Commands:</b>\n/approve /revoke /ban /unban /setplan /add_credits /users"
@@ -161,32 +170,50 @@ async def threads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def approve_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: database.set_approved(int(context.args[0]), True); await update.message.reply_text("✅ <b>User Approved.</b>", parse_mode=ParseMode.HTML)
+    try:
+        target_id = int(context.args[0])
+        database.set_approved(target_id, True)
+        await update.message.reply_text(f"✅ <b>User Approved.</b>", parse_mode=ParseMode.HTML)
     except: await update.message.reply_text("💡 Usage: <code>/approve &lt;id&gt;</code>", parse_mode=ParseMode.HTML)
 
 @admin_only
 async def revoke_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: database.set_approved(int(context.args[0]), False); await update.message.reply_text("✅ <b>User Revoked.</b>", parse_mode=ParseMode.HTML)
+    try:
+        target_id = int(context.args[0])
+        database.set_approved(target_id, False)
+        await update.message.reply_text("✅ <b>User Revoked.</b>", parse_mode=ParseMode.HTML)
     except: await update.message.reply_text("💡 Usage: <code>/revoke &lt;id&gt;</code>", parse_mode=ParseMode.HTML)
 
 @admin_only
 async def ban_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: database.ban_user(int(context.args[0])); await update.message.reply_text("✅ <b>User Banned.</b>", parse_mode=ParseMode.HTML)
+    try:
+        target_id = int(context.args[0])
+        database.ban_user(target_id)
+        await update.message.reply_text("✅ <b>User Banned.</b>", parse_mode=ParseMode.HTML)
     except: await update.message.reply_text("💡 Usage: <code>/ban &lt;id&gt;</code>", parse_mode=ParseMode.HTML)
 
 @admin_only
 async def unban_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: database.unban_user(int(context.args[0])); await update.message.reply_text("✅ <b>User Unbanned.</b>", parse_mode=ParseMode.HTML)
+    try:
+        target_id = int(context.args[0])
+        database.unban_user(target_id)
+        await update.message.reply_text("✅ <b>User Unbanned.</b>", parse_mode=ParseMode.HTML)
     except: await update.message.reply_text("💡 Usage: <code>/unban &lt;id&gt;</code>", parse_mode=ParseMode.HTML)
 
 @admin_only
 async def setplan_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: database.set_plan(int(context.args[0]), context.args[1]); await update.message.reply_text("✅ <b>Plan set successfully.</b>", parse_mode=ParseMode.HTML)
+    try:
+        target_id = int(context.args[0])
+        database.set_plan(target_id, context.args[1])
+        await update.message.reply_text("✅ <b>Plan set successfully.</b>", parse_mode=ParseMode.HTML)
     except: await update.message.reply_text("💡 Usage: <code>/setplan &lt;id&gt; &lt;plan&gt;</code>", parse_mode=ParseMode.HTML)
 
 @admin_only
 async def add_credits_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: database.add_credits(int(context.args[0]), int(context.args[1])); await update.message.reply_text("✅ <b>Credits added.</b>", parse_mode=ParseMode.HTML)
+    try:
+        target_id = int(context.args[0])
+        database.add_credits(target_id, int(context.args[1]))
+        await update.message.reply_text("✅ <b>Credits added.</b>", parse_mode=ParseMode.HTML)
     except: await update.message.reply_text("💡 Usage: <code>/add_credits &lt;id&gt; &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
 
 @admin_only
@@ -226,6 +253,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data.startswith('file_'):
         ftype = q.data.split('_')[1]
         fpath = context.user_data.get('last_uploaded_file')
+        if not fpath:
+            await q.edit_message_text("❌ Session expired. Please re-upload your file.")
+            return
+
         if ftype == 'proxy':
             database.update_user_settings(uid, proxy_file=fpath)
             await q.edit_message_text(f"✅ <b>Proxy file saved.</b>\nYour thread limit is now <b>50</b>.{get_footer()}", parse_mode=ParseMode.HTML)
@@ -280,6 +311,8 @@ def queue_worker(application):
             fpath = task["fpath"]
             settings = task["settings"]
 
+            logger.info(f"Processing Task: {tool} for User: {uid}")
+
             # Start message
             asyncio.run_coroutine_threadsafe(
                 application.bot.edit_message_text(
@@ -305,7 +338,7 @@ def queue_worker(application):
 
 def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
     last_up = [0]
-    ival = 5
+    ival = 3 # Increased feedback frequency
     th = settings['threads']
     pf = settings['proxy_file']
     plist = []
@@ -320,8 +353,9 @@ def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
         except: pass
 
     def callback(text):
-        if time.time() - last_up[0] < ival and "Finished" not in text and "Completed" not in text: return
-        last_up[0] = time.time()
+        now = time.time()
+        if now - last_up[0] < ival and "Finished" not in text and "Completed" not in text: return
+        last_up[0] = now
         asyncio.run_coroutine_threadsafe(
             bot.edit_message_text(
                 chat_id=cid, message_id=mid,
@@ -353,6 +387,7 @@ def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
             if not lines: callback("❌ No valid accounts."); return
             stats = hit.LiveStats(len(lines), callback=callback)
             mgr = hit.EnhancedResultManager(f"bot_{int(time.time())}", "full")
+
             def prc(line):
                 try:
                     e, p = line.split(':', 1); c = hit.UnifiedChecker(check_mode="full_enhanced")
@@ -361,6 +396,7 @@ def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
                     if r["status"] == "HIT": mgr.save_hit(e, p, r)
                     stats.print_live("full_enhanced")
                 except: pass
+
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=th) as ex: ex.map(prc, lines)
             res_path = mgr.base_folder
@@ -393,28 +429,30 @@ def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
         asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=cid, text=f"❌ <b>Execution Error:</b> <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML), loop)
 
 async def post_init(application):
+    # Pass the application to the worker
     threading.Thread(target=queue_worker, args=(application,), daemon=True).start()
 
 if __name__ == '__main__':
+    # Initial Admin Setup
     if not database.is_approved(ADMIN_ID): database.set_approved(ADMIN_ID, True)
-    if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        print("CRITICAL ERROR: No BOT_TOKEN.")
-        exit(1)
 
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    # Initialize Application
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('help', help_command))
-    app.add_handler(CommandHandler('me', me_command))
-    app.add_handler(CommandHandler('threads', threads_command))
-    app.add_handler(CommandHandler('approve', approve_handler))
-    app.add_handler(CommandHandler('revoke', revoke_handler))
-    app.add_handler(CommandHandler('ban', ban_handler))
-    app.add_handler(CommandHandler('unban', unban_handler))
-    app.add_handler(CommandHandler('setplan', setplan_handler))
-    app.add_handler(CommandHandler('add_credits', add_credits_handler))
-    app.add_handler(CommandHandler('users', users_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
+    # Register Handlers
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('help', help_command))
+    application.add_handler(CommandHandler('me', me_command))
+    application.add_handler(CommandHandler('threads', threads_command))
+    application.add_handler(CommandHandler('approve', approve_handler))
+    application.add_handler(CommandHandler('revoke', revoke_handler))
+    application.add_handler(CommandHandler('ban', ban_handler))
+    application.add_handler(CommandHandler('unban', unban_handler))
+    application.add_handler(CommandHandler('setplan', setplan_handler))
+    application.add_handler(CommandHandler('add_credits', add_credits_handler))
+    application.add_handler(CommandHandler('users', users_handler))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
 
-    app.run_polling()
+    logger.info("Bot is starting...")
+    application.run_polling()
