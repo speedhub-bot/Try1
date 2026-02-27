@@ -22,7 +22,8 @@ import database
 
 # Authorized Admin ID
 ADMIN_ID = 5944410248
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8544623193:AAGB5p8qqnkPbsmolPkKVpAGW7XmWdmFOak")
+# HARDCODED BOT TOKEN AS REQUESTED
+BOT_TOKEN = "8544623193:AAGB5p8qqnkPbsmolPkKVpAGW7XmWdmFOak"
 
 # Enable logging
 logging.basicConfig(
@@ -96,7 +97,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💳 <b>Credits:</b> <code>{credits}</code>\n"
         f"🧵 <b>Threads:</b> <code>{settings['threads']}</code>\n"
         f"🌐 <b>Proxy File:</b> <code>{'SET ✅' if settings['proxy_file'] else 'NOT SET ❌'}</code>\n\n"
-        f"Select a tool to begin:{get_footer()}"
+        f"Select a tool to begin execution:{get_footer()}"
     )
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
@@ -210,7 +211,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data.startswith('tool_'):
         tool = q.data.split('_')[1]
         context.user_data['selected_tool'] = tool
-        await q.edit_message_text(f"{get_header(f'TOOL: {tool.upper()}')}Upload your <b>.txt combo file</b> now.{get_footer()}", parse_mode=ParseMode.HTML)
+        await q.edit_message_text(f"{get_header(f'TOOL: {tool.upper()}')}\nUpload your <b>.txt combo file</b> now.{get_footer()}", parse_mode=ParseMode.HTML)
     elif q.data == 'settings':
         s = database.get_user_settings(uid)
         msg = f"{get_header('SETTINGS')}🧵 Threads: <code>{s['threads']}</code>\n🌐 Proxy File: <code>{'SET' if s['proxy_file'] else 'NOT SET'}</code>\n\nUse <code>/threads &lt;n&gt;</code> to change threads.\nUpload a file and select 'Proxy File' to set proxies.{get_footer()}"
@@ -239,7 +240,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif "premium" in plan: priority = 1
 
             queue_pos = task_queue.qsize() + 1
-            st_msg = await q.edit_message_text(f"⏳ <b>Queued Task...</b>\n\nTool: <b>{html.escape(tool.upper())}</b>\nPriority: <code>{plan.upper()}</code>\nPosition: <code>#{queue_pos}</code>\n\n<i>Task will start automatically.</i>{get_footer()}", parse_mode=ParseMode.HTML)
+            st_msg = await q.edit_message_text(f"⏳ <b>Queued Task...</b>\n\nTool: <b>{html.escape(tool.upper())}</b>\nPriority: <code>{plan.upper()}</code>\nPosition: <code>#{queue_pos}</code>\n\n<i>Processing will start automatically.</i>{get_footer()}", parse_mode=ParseMode.HTML)
 
             task_queue.put((priority, time.time(), {
                 "tool": tool,
@@ -330,6 +331,9 @@ def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
             loop
         )
 
+    # Immediate feedback
+    callback("🚀 Engines started. Loading accounts into tool...")
+
     try:
         res_path = None
         if tool == 'flux':
@@ -345,7 +349,7 @@ def run_tool_sync(tool, fpath, cid, mid, loop, settings, bot):
             chk = h.HotmailChecker(log_callback=callback, proxies=plist)
             chk.run(fpath, num_threads=th); res_path = "Hotmail-Hits.txt"
         elif tool == 'hit':
-            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f: lines = [l.strip() for l in f if ':' in l]
+            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f: lines = [l.strip() for l in f.readlines() if ':' in l]
             if not lines: callback("❌ No valid accounts."); return
             stats = hit.LiveStats(len(lines), callback=callback)
             mgr = hit.EnhancedResultManager(f"bot_{int(time.time())}", "full")
