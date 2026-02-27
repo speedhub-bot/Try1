@@ -47,7 +47,7 @@ def get_credits(user_id):
     return user.get("credits", 0) if user else 0
 
 def get_plan(user_id):
-    if is_admin(user_id): return "👑 Owner"
+    if is_admin(user_id): return "Owner"
     db = load_db()
     user = db["users"].get(str(user_id))
     return user.get("plan", "Free") if user else "Free"
